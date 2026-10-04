@@ -267,8 +267,6 @@ function buildExport(project, mediaMap, outPath, encoders) {
   let ext = 'mp4';
   let audioDesc = 'なし';
   const v = core.migrateVideo(Object.assign({}, project.video));
-  const isProres = v.format === 'prores422hq';
-  if (isProres) ext = 'mov';
   let audioSrc = null; // { file, media, in, start, loop, L }
   if (au.mode === 'layer') {
     const layer = project.layers.find((l) => l.id === au.layerId);
@@ -286,9 +284,8 @@ function buildExport(project, mediaMap, outPath, encoders) {
     const m = audioSrc.media;
     const processed = audioSrc.in > 0 || audioSrc.start > 0 || audioSrc.loop || audioSrc.out > 0 || au.volume || au.fadeIn > 0 || au.fadeOut > 0;
     let codec = au.codec;
-    const copyable = isProres ? ['aac', 'alac', 'pcm_s16le', 'pcm_s24le', 'pcm_s32le'] : ['aac', 'mp3', 'alac', 'ac3'];
-    // ProRes（マスター用）は音声も無劣化: 加工なしならコピー、それ以外は PCM 24bit
-    if (codec === 'auto') codec = !processed && copyable.includes(m.audioCodec) ? 'copy' : isProres ? 'pcm' : 'aac';
+    const copyable = ['aac', 'mp3', 'alac', 'ac3'];
+    if (codec === 'auto') codec = !processed && copyable.includes(m.audioCodec) ? 'copy' : 'aac';
     if (codec === 'copy' && (processed || !copyable.includes(m.audioCodec))) {
       warnings.push('音声に加工があるか、MP4にそのまま入れられない形式のため、コピーではなく AAC 320kbps で書き出します');
       codec = 'aac';
@@ -322,22 +319,22 @@ function buildExport(project, mediaMap, outPath, encoders) {
   }
 
   // ---- 映像エンコーダ
-  // Looking Glass Bridge / Studio は NVIDIA のハードウェアデコード（NVDEC）で再生する。
-  // 実測で再生できたのは H.264 / HEVC の 4:2:0 8bit。10bit・ProRes は不可、4:4:4 は Studio で緑色に崩れる。
+  // Looking Glass Bridge / Studio は NVIDIA のハードウェアデコード（NVDEC）で読める形式しか受け付けない。
+  // 実測で使えたのは H.264 / HEVC の 4:2:0 8bit。10bit・ProRes・HAP は不可、4:4:4 は Studio で緑色に崩れる。
   const big = geo.qw > 4096 || geo.qh > 4096;
   let format = v.format;
   if (format === 'h264' && big) {
     warnings.push('quilt が 4096px を超えるため H.264 はハードウェアデコードできません。HEVC で書き出します');
     format = 'hevc420';
   }
-  // Studio 変換用: HEVC 4:2:0 を品質4（ほぼ劣化なし）で
-  const master = format === 'hevc420_master';
-  if (master) format = 'hevc420';
+  // Studio 変換用: HEVC 4:2:0 ロスレス（輝度は完全に無劣化、色は 4:2:0 化のみ）
+  const lossless = format === 'hevc_lossless';
+  if (lossless) format = 'hevc420';
   const has = (e) => !encoders || !encoders.length || encoders.includes(e);
-  // GPU エンコーダ: Windows / Linux は NVENC、macOS は VideoToolbox
+  // GPU エンコーダ: Windows / Linux は NVENC、macOS は VideoToolbox（ロスレス非対応）
   const mac = process.platform === 'darwin';
   let gpuName;
-  if (mac) gpuName = format === 'h264' ? 'h264_videotoolbox' : format === 'hevc420' ? 'hevc_videotoolbox' : null;
+  if (mac) gpuName = lossless ? null : format === 'h264' ? 'h264_videotoolbox' : 'hevc_videotoolbox';
   else gpuName = format === 'h264' ? 'h264_nvenc' : 'hevc_nvenc';
   const cpuName = format === 'h264' ? 'libx264' : 'libx265';
   let useGpu = !!gpuName && (v.encoder === 'gpu' || (v.encoder === 'auto' && has(gpuName)));
@@ -347,28 +344,27 @@ function buildExport(project, mediaMap, outPath, encoders) {
     useGpu = false;
   }
   const enc = useGpu ? gpuName : cpuName;
-  const crf = String(master ? 4 : Math.max(useGpu ? 1 : 0, Number(v.crf)));
+  const q = String(Math.max(useGpu ? 1 : 0, Number(v.crf)));
   const pix = 'yuv420p';
   let videoArgs;
-  if (isProres) {
-    // ProRes 422 HQ（Studio の変換はソフトウェアデコードなので読める。Bridge での直接再生は不可）
-    // prores_aw は prores_ks より約3倍速い（画質差はわずか）
-    videoArgs = ['-c:v', 'prores_aw', '-profile:v', '3', '-vendor', 'apl0'];
+  if (lossless && useGpu) {
+    videoArgs = ['-c:v', enc, '-preset', 'p7', '-tune', 'lossless', '-profile:v', 'main'];
+  } else if (lossless) {
+    videoArgs = ['-c:v', 'libx265', '-preset', 'fast', '-x265-params', 'lossless=1'];
   } else if (useGpu && mac) {
     // VideoToolbox の固定品質（1〜100、大きいほど高画質）に品質値を換算
-    videoArgs = ['-c:v', enc, '-q:v', String(Math.round(Math.min(100, Math.max(1, 100 - Number(crf) * 2.5)))), '-allow_sw', '0'];
+    videoArgs = ['-c:v', enc, '-q:v', String(Math.round(Math.min(100, Math.max(1, 100 - Number(q) * 2.5)))), '-allow_sw', '0'];
     if (format === 'hevc420') videoArgs.push('-profile:v', 'main');
   } else if (useGpu) {
-    videoArgs = ['-c:v', enc, '-preset', 'p7', '-tune', 'hq', '-rc', 'vbr', '-cq', crf, '-b:v', '0', '-spatial-aq', '1'];
-    if (format === 'hevc420') videoArgs.push('-profile:v', 'main');
-    else videoArgs.push('-profile:v', 'high');
+    // NVENC は VBR(-cq) だと低い値でも画質が頭打ちになる（実測 PSNR 41dB 止まり）ため固定 QP にする
+    videoArgs = ['-c:v', enc, '-preset', 'p7', '-tune', 'hq', '-rc', 'constqp', '-qp', q, '-profile:v', format === 'h264' ? 'high' : 'main'];
   } else if (format === 'h264') {
-    videoArgs = ['-c:v', 'libx264', '-preset', v.speed, '-crf', crf, '-profile:v', 'high'];
+    videoArgs = ['-c:v', 'libx264', '-preset', v.speed, '-crf', q, '-profile:v', 'high'];
   } else {
-    videoArgs = ['-c:v', 'libx265', '-preset', v.speed, '-crf', crf];
+    videoArgs = ['-c:v', 'libx265', '-preset', v.speed, '-crf', q];
   }
-  if (format !== 'h264' && !isProres) videoArgs.push('-tag:v', 'hvc1');
-  videoArgs.push('-pix_fmt', isProres ? 'yuv422p10le' : pix);
+  if (format !== 'h264') videoArgs.push('-tag:v', 'hvc1');
+  videoArgs.push('-pix_fmt', pix);
 
   if (outPath && ext === 'mov' && !/\.mov$/i.test(outPath)) outPath = outPath.replace(/\.[^.\\/]+$/, '.mov');
 
@@ -376,7 +372,8 @@ function buildExport(project, mediaMap, outPath, encoders) {
   const args = ['-hide_banner', '-y'];
   inputs.forEach((a) => args.push(...a));
   return {
-    geo, fps, dur, ext, enc: isProres ? 'ProRes 422 HQ / yuv422p10le' : `${enc} / ${pix}${master ? ' / 品質4' : ''}`, audioDesc, warnings, filterText, outPath,
+    estBitrate: 0,
+    geo, fps, dur, ext, enc: `${enc} / ${pix}${lossless ? ' / ロスレス' : ''}`, audioDesc, warnings, filterText, outPath,
     // filter は長くなるのでファイル経由で渡す（-/filter_complex は ffmpeg 7.1 以降。古い版は -filter_complex_script）
     makeArgs(filterFile, legacy) {
       return [
@@ -433,8 +430,10 @@ async function startExport(project, mediaMap, outPath, encoders, onProgress) {
           const t = Number(m[1]) / 1e6;
           const ratio = Math.min(1, t / job.dur);
           const elapsed = (Date.now() - started) / 1000;
-          onProgress({ ratio, time: t, elapsed, eta: ratio > 0.01 ? (elapsed / ratio) * (1 - ratio) : null });
+          onProgress({ ratio, time: t, elapsed, eta: ratio > 0.01 ? (elapsed / ratio) * (1 - ratio) : null, finishing: ratio >= 0.995 });
         }
+        // エンコード終了後、ファイルの仕上げ（moov の移動など）の間は進捗が出ない
+        if (line === 'progress=end') onProgress({ ratio: 1, finishing: true, elapsed: (Date.now() - started) / 1000 });
         const fm = /^fps=([\d.]+)/.exec(line);
         if (fm) onProgress({ fps: Number(fm[1]) });
       }
@@ -481,7 +480,7 @@ function describeCommand(project, mediaMap, outPath, encoders) {
   return {
     command: [path.basename(ffmpegPath) === ffmpegPath ? ffmpegPath : quoteArg(ffmpegPath), ...args.map(quoteArg)].join(' '),
     filterText: job.filterText,
-    summary: { geo: job.geo, fps: job.fps, dur: job.dur, enc: job.enc, audio: job.audioDesc, outPath: job.outPath, warnings: job.warnings, inputs: (job.filterText.match(/\[\d+:[va]\]/g) || []).length },
+    summary: { estBytes: job.estBitrate ? (job.estBitrate * job.dur) / 8 : 0, geo: job.geo, fps: job.fps, dur: job.dur, enc: job.enc, audio: job.audioDesc, outPath: job.outPath, warnings: job.warnings, inputs: (job.filterText.match(/\[\d+:[va]\]/g) || []).length },
   };
 }
 

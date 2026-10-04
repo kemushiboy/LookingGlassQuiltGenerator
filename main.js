@@ -209,7 +209,15 @@ ipcMain.handle('media:frame', async (_e, p, t, maxW) => {
   }
 });
 
-ipcMain.handle('export:describe', (_e, project, mediaMap, outPath) => ff.describeCommand(project, mediaMap, outPath, ffInfo.encoders));
+ipcMain.handle('export:describe', (_e, project, mediaMap, outPath) => {
+  const d = ff.describeCommand(project, mediaMap, outPath, ffInfo.encoders);
+  // 出力先ドライブの空き容量
+  try {
+    const st = fs.statfsSync(path.dirname(outPath));
+    d.summary.freeBytes = st.bavail * st.bsize;
+  } catch { /* フォルダ未作成など */ }
+  return d;
+});
 
 ipcMain.handle('export:start', async (_e, project, mediaMap, outPath) => {
   if (fs.existsSync(outPath)) {

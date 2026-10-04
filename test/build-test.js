@@ -51,7 +51,7 @@ async function main() {
   const mediaMap = {};
   for (const p of [P('bg.png'), P('mid.mp4'), P('fg_alpha.mov'), P('music.wav')]) mediaMap[p] = await ff.probe(p);
 
-  const out = path.join(dir, core.outputFileName(project, project.video.format === 'prores422hq' ? 'mov' : 'mp4'));
+  const out = path.join(dir, core.outputFileName(project, 'mp4'));
   const desc = ff.describeCommand(project, mediaMap, out, info.encoders);
   fs.writeFileSync(path.join(dir, 'filter.txt'), desc.filterText);
   console.log(desc.command);

@@ -85,12 +85,20 @@ Looking Glass Bridge / Studio は NVIDIA GPU のハードウェアデコード�
 
 **Studio 変換用（Portrait 本体へ転送する前提のマスター）**
 
-Studio は本体へ転送するとき、libmpv でソフトウェアデコード → レンチキュラー合成 → kvazaar（HEVC 4:2:0・約50Mbps）で再エンコードします。変換前に劣化させないための形式として次の2つを用意しています。
+Studio は本体へ転送するとき、レンチキュラー合成 → kvazaar（HEVC 4:2:0・約50Mbps）で再エンコードします。変換前に劣化させないよう「Studio変換用 HEVC ロスレス」（4:2:0 8bit、輝度は完全に無劣化）を用意しています（Studio 1.7.1 で読み込みを確認済み）。ProRes / HAP は Studio・Bridge が読み込めません。
 
-| 形式 | 内容 |
-| --- | --- |
-| Studio変換用 HEVC 品質4 | 4:2:0 8bit・ほぼ劣化なし。Bridge での確認（実機で再生）にも使える |
-| Studio変換用 ProRes 422 HQ | .mov・10bit 4:2:2（prores_aw）。音声は加工がなければコピー、あれば PCM 24bit。Bridge では再生できない |
+実素材の quilt（3360×3360・3秒）を劣化なしの基準と比べた結果:
+
+| 形式 | ビットレート | PSNR (Y) | SSIM |
+| --- | --- | --- | --- |
+| HEVC ロスレス 4:2:0（GPU / CPU） | 約 30 Mbps | 85.4 dB | 0.9969 |
+| HEVC 品質4（CPU x265） | 約 30 Mbps | 66.1 dB | 0.9967 |
+| HEVC 品質4（GPU 固定QP） | 約 29 Mbps | 58.2 dB | — |
+| HEVC 品質12（GPU 固定QP） | 約 22 Mbps | 51.0 dB | — |
+| HAP Q | 約 1360 Mbps | 38.8 dB | 0.9886 |
+| HAP | 約 850 Mbps | 33.1 dB | 0.9711 |
+
+ビットレートは素材の動きによって大きく変わります（動きの多い素材ではロスレスは数百 Mbps になることがあります）。
 
 ### Looking Glass Bridge 連携
 

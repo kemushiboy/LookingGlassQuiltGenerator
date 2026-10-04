@@ -484,14 +484,13 @@ function renderExportTab() {
       options: [
         ['hevc420', 'HEVC 4:2:0 8bit（実機再生用・推奨）'],
         ['h264', 'H.264 4:2:0 8bit（実機再生用・互換性重視）'],
-        ['hevc420_master', 'Studio変換用 HEVC 品質4（実機再生も可）'],
-        ['prores422hq', 'Studio変換用 ProRes 422 HQ（.mov・実機での直接再生は不可）'],
+        ['hevc_lossless', 'Studio変換用 HEVC ロスレス（実機再生も可）'],
       ],
       help: '実機再生用: Bridge（PC接続時の表示）で再生できる形式。Studio変換用: Studio に読み込んで本体へ転送（変換）する前提のマスター。ProRes は Bridge では再生できないため「実機で再生」「Bridge確認」には使えません。',
     },
-    { key: 'encoder', label: 'エンコーダ', type: 'select', show: (o) => o.format !== 'prores422hq', options: [['auto', gpuOk ? '自動（GPU）' : '自動（CPU）'], ['gpu', 'GPU（NVENC / VideoToolbox・高速）'], ['cpu', 'CPU（x264/x265・低速だが同じ容量でより高画質）']] },
-    { key: 'crf', label: '品質', type: 'range', min: 1, max: 30, step: 1, def: 12, show: (o) => !['prores422hq', 'hevc420_master'].includes(o.format), help: '小さいほど高画質・大容量（目安: 最高画質 8〜12 / 公式推奨 20）' },
-    { key: 'speed', label: '圧縮速度', type: 'select', options: [['fast', 'fast'], ['medium', 'medium'], ['slow', 'slow（推奨）'], ['slower', 'slower']], show: (o) => o.format !== 'prores422hq' && (o.encoder === 'cpu' || (o.encoder === 'auto' && !gpuOk)) },
+    { key: 'encoder', label: 'エンコーダ', type: 'select', options: [['auto', gpuOk ? '自動（GPU）' : '自動（CPU）'], ['gpu', 'GPU（NVENC / VideoToolbox・高速）'], ['cpu', 'CPU（x264/x265・低速だが同じ容量でより高画質）']] },
+    { key: 'crf', label: '品質', type: 'range', min: 1, max: 30, step: 1, def: 12, show: (o) => o.format !== 'hevc_lossless', help: '小さいほど高画質・大容量（目安: 高画質 8〜12 / 公式推奨 20）' },
+    { key: 'speed', label: '圧縮速度', type: 'select', options: [['fast', 'fast'], ['medium', 'medium'], ['slow', 'slow（推奨）'], ['slower', 'slower']], show: (o) => o.format !== 'hevc_lossless' && (o.encoder === 'cpu' || (o.encoder === 'auto' && !gpuOk)) },
     { section: '出力' },
   ];
   buildForm($('exportForm'), defs, v, (d) => {
@@ -509,7 +508,6 @@ function renderExportTab() {
 }
 
 function outputExt() {
-  if (state.project.video.format === 'prores422hq') return 'mov';
   return state.project.audio.mode !== 'none' && state.project.audio.codec === 'pcm' ? 'mov' : 'mp4';
 }
 
@@ -535,6 +533,8 @@ function updateExportSummary() {
       $('exportSummary').innerHTML = [
         `${s.geo.qw}×${s.geo.qh} / ${s.fps.toFixed(3)}fps / ${QGCore.formatTime(s.dur)}（${Math.round(s.dur * s.fps)}フレーム）`,
         `映像: ${s.enc} / 音声: ${s.audio}`,
+        ...(s.estBytes ? [`推定サイズ: 約 ${(s.estBytes / 1e9).toFixed(1)} GB${s.freeBytes ? `（空き ${(s.freeBytes / 1e9).toFixed(1)} GB）` : ''}`] : []),
+        ...(s.estBytes && s.freeBytes && s.estBytes > s.freeBytes * 0.9 ? ['<span class="warn">⚠ 出力先の空き容量が足りない可能性があります</span>'] : []),
         ...s.warnings.map((w) => `<span class="warn">⚠ ${w}</span>`),
       ].join('<br>');
     } catch (e) {
@@ -909,10 +909,6 @@ function maybeLiveCast(now) {
 
 async function castOutput() {
   if (!state.lastOutput) return;
-  if (/.mov$/i.test(state.lastOutput) && state.project.video.format === 'prores422hq') {
-    toast('ProRes は Bridge で再生できません。Studio に読み込んで変換してください', true);
-    return;
-  }
   const g = geo();
   const r = await api.bridgeCastFile(state.lastOutput, { cols: g.cols, rows: g.rows, aspect: g.aspect });
   if (r.ok) toast('実機で再生しています');
@@ -1100,7 +1096,10 @@ async function init() {
     modal('ffmpeg コマンド', box);
   };
   api.onExportProgress((p) => {
-    if (p.ratio !== undefined) {
+    if (p.finishing) {
+      $('progressBar').style.width = '100%';
+      $('progressText').textContent = `仕上げ中…（ファイルを書き込んでいます。大きいファイルでは数分かかります）  経過 ${(p.elapsed || 0).toFixed(0)}秒`;
+    } else if (p.ratio !== undefined) {
       $('progressBar').style.width = `${(p.ratio * 100).toFixed(1)}%`;
       $('progressText').textContent = `${(p.ratio * 100).toFixed(1)}%  ${QGCore.formatTime(p.time)} / ${QGCore.formatTime(duration())}  経過 ${p.elapsed.toFixed(0)}秒${p.eta !== null ? ` / 残り約 ${Math.ceil(p.eta)}秒` : ''}`;
     }

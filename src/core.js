@@ -52,7 +52,7 @@
       bgColor: '#000000',
       layers: [],
       audio: { mode: 'none', layerId: '', path: '', start: 0, in: 0, volume: 0, fadeIn: 0, fadeOut: 0, codec: 'auto' },
-      // format: hevc420（推奨）| h264（互換性重視）| hevc420_master / prores422hq（Studio 変換用） / encoder: auto | cpu | gpu
+      // format: hevc420（推奨）| h264（互換性重視）| hevc_lossless（Studio 変換用） / encoder: auto | cpu | gpu
       video: { format: 'hevc420', encoder: 'auto', crf: 12, speed: 'slow' },
       output: { dir: '', name: 'quilt' },
     };
@@ -246,7 +246,8 @@ function migrateVideo(v) {
   }
   // HEVC 4:4:4 は Studio で緑色に表示されるため廃止（4:2:0 に置き換え）
   if (v && v.format === 'hevc444') v.format = 'hevc420';
-  if (v && v.format === 'hevc444_master') v.format = 'hevc420_master';
+  // Studio が読み込めない ProRes と、画質が頭打ちだった品質4 マスターはロスレスに置き換え
+  if (v && ['hevc444_master', 'hevc420_master', 'prores422hq'].includes(v.format)) v.format = 'hevc_lossless';
   return v;
 }
 
