@@ -939,7 +939,9 @@ function updateTitle() {
 
 async function saveProject(saveAs) {
   const json = JSON.stringify(state.project, null, 2);
-  const p = await api.saveProject(json, saveAs ? '' : state.projectPath);
+  // 保存ダイアログの初期値: 別名保存なら今のファイル、未保存なら出力ファイル名
+  const suggest = state.projectPath || `${(state.project.output.name || 'quilt-project').replace(/[\\/:*?"<>|]/g, '_')}.lgq.json`;
+  const p = await api.saveProject(json, saveAs ? '' : state.projectPath, suggest);
   if (p) {
     state.projectPath = p;
     state.dirty = false;
@@ -1128,6 +1130,7 @@ async function init() {
   };
   $('btnOpen').onclick = () => loadProject();
   $('btnSave').onclick = (e) => saveProject(e.shiftKey);
+  $('btnSaveAs').onclick = () => saveProject(true);
   $('btnBridge').onclick = () => refreshBridge(false);
   $('btnMatchDevice').onclick = matchDevice;
   $('btnCast').onclick = castCurrentFrame;

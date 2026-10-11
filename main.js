@@ -170,10 +170,12 @@ ipcMain.handle('dialog:outDir', async (_e, cur) => {
   return r.canceled ? '' : r.filePaths[0];
 });
 
-ipcMain.handle('project:save', async (_e, json, curPath) => {
+ipcMain.handle('project:save', async (_e, json, curPath, suggest) => {
   let p = curPath;
   if (!p) {
-    const r = await dialog.showSaveDialog(win, { title: 'プロジェクトを保存', defaultPath: path.join(settings.lastDir || app.getPath('documents'), 'quilt-project.lgq.json'), filters: [{ name: 'Quilt プロジェクト', extensions: ['json'] }] });
+    // suggest がフルパスならそのまま、ファイル名だけなら前回のフォルダに置く
+    const def = suggest && path.isAbsolute(suggest) ? suggest : path.join(settings.lastDir || app.getPath('documents'), suggest || 'quilt-project.lgq.json');
+    const r = await dialog.showSaveDialog(win, { title: curPath === '' && suggest && path.isAbsolute(suggest) ? 'プロジェクトを別名で保存' : 'プロジェクトを保存', defaultPath: def, filters: [{ name: 'Quilt プロジェクト', extensions: ['json'] }] });
     if (r.canceled) return '';
     p = r.filePath;
   }

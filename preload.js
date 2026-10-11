@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld('api', {
   pickMedia: () => ipcRenderer.invoke('dialog:media'),
   pickAudio: () => ipcRenderer.invoke('dialog:audio'),
   pickOutDir: (cur) => ipcRenderer.invoke('dialog:outDir', cur),
-  saveProject: (json, p) => ipcRenderer.invoke('project:save', json, p),
+  saveProject: (json, p, suggest) => ipcRenderer.invoke('project:save', json, p, suggest),
   openProject: (p) => ipcRenderer.invoke('project:open', p),
   probe: (p) => ipcRenderer.invoke('media:probe', p),
   frame: (p, t, maxW) => ipcRenderer.invoke('media:frame', p, t, maxW),
