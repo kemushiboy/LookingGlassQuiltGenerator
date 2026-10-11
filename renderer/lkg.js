@@ -69,7 +69,7 @@ api.onLkgState((m) => {
 
 function currentTime(now) {
   if (!playing || !project) return baseTime;
-  const dur = QGCore.projectDuration(project, mediaMap);
+  const dur = QGCore.totalDuration(project, mediaMap);
   let t = baseTime + (now - baseWall) / 1000;
   if (t >= dur) t %= dur;
   return t;
@@ -80,7 +80,10 @@ function frame(now) {
   if (!project || !cal) return;
   if (!playing && !dirty) return;
   dirty = false;
-  const t = currentTime(now);
+  const now_t = currentTime(now);
+  // 冒頭の静止時間中は合成の最初のフレームで止める
+  const t = QGCore.compTime(project, now_t);
+  const moving = playing && now_t >= QGCore.prerollOf(project);
   const f = fps();
   const items = [];
   for (const layer of QGCore.drawOrder(project)) {
@@ -88,7 +91,7 @@ function frame(now) {
     const media = mediaMap[layer.path];
     if (!s || !media) continue;
     const st = QGCore.sourceTime(layer, media, t, f);
-    const r = s.src.prepare(st, playing, false);
+    const r = s.src.prepare(st, moving, false);
     if (r && preview.updateTexture(layer.id, r.src, r.stamp)) items.push({ layer, media });
   }
   for (const l of project.layers) {

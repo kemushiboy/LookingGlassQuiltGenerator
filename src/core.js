@@ -47,6 +47,7 @@
       durationMode: 'longest', // longest | layer | custom
       durationLayer: '',
       durationCustom: 10,
+      preroll: 0, // 冒頭に入れる静止時間（最初のフレームで固定・無音）[秒]
       focus: 0, // この Z 値の面がスクリーン面（視差ゼロ）になる
       depthScale: 1, // 全レイヤーの視差に掛かる倍率
       bgColor: '#000000',
@@ -180,6 +181,18 @@
     return 30;
   }
 
+  // ---- 冒頭の静止時間
+  // 再生・書き出しの時刻 t（静止時間を含む）と、合成の時刻（静止時間を含まない）を分けて扱う
+  function prerollOf(project) {
+    return Math.max(0, Number(project.preroll) || 0);
+  }
+  function totalDuration(project, mediaMap) {
+    return projectDuration(project, mediaMap) + prerollOf(project);
+  }
+  function compTime(project, t) {
+    return Math.max(0, t - prerollOf(project));
+  }
+
   function projectDuration(project, mediaMap) {
     if (project.durationMode === 'custom') return Math.max(0.1, Number(project.durationCustom) || 1);
     if (project.durationMode === 'layer') {
@@ -255,6 +268,7 @@ function migrateVideo(v) {
     PRESETS, migrateVideo, IMAGE_EXT, newId, isImagePath, baseName, defaultProject, defaultLayer,
     geometry, viewFactor, maxShift, shiftAt, layerBox, drawOrder,
     segLength, naturalEnd, projectFps, projectDuration, sourceTime,
+    prerollOf, totalDuration, compTime,
     hexToRgb, outputFileName, formatTime,
   };
 });

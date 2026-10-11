@@ -38,6 +38,7 @@ async function main() {
   project.durationCustom = 5;
   project.output.name = process.env.QG_FORMAT ? `test_${process.env.QG_FORMAT}` : 'test';
   if (process.env.QG_FORMAT) project.video.format = process.env.QG_FORMAT;
+  if (process.env.QG_PREROLL) project.preroll = Number(process.env.QG_PREROLL);
 
   const bg = core.defaultLayer(P('bg.png'), 'image');
   Object.assign(bg, { z: 6, fit: 'cover', overscan: true });

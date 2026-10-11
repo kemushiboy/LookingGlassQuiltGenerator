@@ -79,8 +79,9 @@ function geo() {
 function fps() {
   return QGCore.projectFps(state.project, state.mediaMap);
 }
+// 再生・書き出し全体の尺（冒頭の静止時間を含む）
 function duration() {
-  return QGCore.projectDuration(state.project, state.mediaMap);
+  return QGCore.totalDuration(state.project, state.mediaMap);
 }
 
 function touch(structural) {
@@ -394,7 +395,8 @@ function renderProjectTab() {
     },
     { key: 'durationCustom', label: '秒数', type: 'number', min: 0.1, step: 0.01, unit: '秒', structural: true, show: (o) => o.durationMode === 'custom' },
     { key: 'fps', label: 'fps', type: 'number', min: 0, max: 120, step: 0.001, structural: true, help: `0 = 最初の動画素材に合わせる（現在 ${fps().toFixed(3)}fps）` },
-    { help: `現在の尺: ${QGCore.formatTime(duration())}（${Math.round(duration() * fps())} フレーム）。ループ/静止を使うと素材より長い尺も作れます。` },
+    { key: 'preroll', label: '冒頭の静止', type: 'number', min: 0, step: 0.1, unit: '秒', structural: true, help: '書き出しの冒頭に、最初のフレームで止めた無音の時間を入れます（0 = なし）' },
+    { help: `現在の尺: ${QGCore.formatTime(duration())}（${Math.round(duration() * fps())} フレーム${QGCore.prerollOf(p) > 0 ? `、うち冒頭の静止 ${QGCore.prerollOf(p)}秒` : ''}）。ループ/静止を使うと素材より長い尺も作れます。` },
   ];
   buildForm($('tab-project'), defs, p, (d, v, structural) => {
     if (d.key === 'preset') syncPresetTop();
@@ -573,6 +575,9 @@ async function startExport() {
     toast('書き出しが完了しました');
   } else if (r.cancelled) {
     $('progressText').textContent = '中止しました';
+  } else if (r.noSpace) {
+    $('progressText').textContent = '出力先のディスクの空き容量が足りなくなったため中断しました（書きかけのファイルは削除しました）。空きを増やすか、出力フォルダを別のドライブにしてください。';
+    toast('ディスクの空き容量が足りません', true);
   } else {
     $('progressText').textContent = 'エラーが発生しました（ログ参照）';
     $('exportLog').textContent = r.error || r.log || '';
@@ -610,11 +615,14 @@ function renderTimeline() {
 
 function updateTimelineBars() {
   const dur = duration();
+  const pre = QGCore.prerollOf(state.project);
   for (const track of document.querySelectorAll('.tl-track')) {
     const l = state.project.layers.find((x) => x.id === track.dataset.id);
     if (!l) continue;
     const m = state.mediaMap[l.path];
-    const s = Math.max(0, l.start);
+    // 冒頭の静止時間のぶん右にずらして表示（開始時刻は合成内の時刻）
+    track.style.backgroundImage = pre > 0 ? `linear-gradient(90deg, #2a2f3a ${(pre / dur) * 100}%, transparent ${(pre / dur) * 100}%)` : '';
+    const s = pre + Math.max(0, l.start);
     const L = QGCore.segLength(l, m);
     const e = Math.min(dur, s + (isFinite(L) ? L : dur));
     const bar = track.querySelector('.tl-bar');
@@ -696,9 +704,10 @@ function updateTransport() {
 function syncAudioPreview() {
   if (!audioEl) return;
   const a = state.project.audio;
-  const st = state.time - a.start + a.in;
+  const st = QGCore.compTime(state.project, state.time) - a.start + a.in;
   const m = state.mediaMap[a.path];
-  if (!state.playing || st < 0 || (m && st > m.duration)) {
+  const inPreroll = state.time < QGCore.prerollOf(state.project); // 冒頭の静止時間は無音
+  if (!state.playing || inPreroll || st < 0 || (m && st > m.duration)) {
     if (!audioEl.paused) audioEl.pause();
     return;
   }
@@ -719,13 +728,16 @@ function collectItems() {
   const items = [];
   const f = fps();
   const audio = state.project.audio;
+  // 冒頭の静止時間中は合成の最初のフレーム（t=0）で止めておく
+  const t = QGCore.compTime(state.project, state.time);
+  const moving = state.playing && state.time >= QGCore.prerollOf(state.project);
   for (const layer of QGCore.drawOrder(state.project)) {
     const src = state.sources.get(layer.id);
     const media = state.mediaMap[layer.path];
     if (!src || !media) continue;
-    const st = QGCore.sourceTime(layer, media, state.time, f);
-    const audible = state.playing && audio.mode === 'layer' && audio.layerId === layer.id;
-    const r = src.prepare(st, state.playing, audible);
+    const st = QGCore.sourceTime(layer, media, t, f);
+    const audible = moving && audio.mode === 'layer' && audio.layerId === layer.id;
+    const r = src.prepare(st, moving, audible);
     if (r && preview.updateTexture(layer.id, r.src, r.stamp)) items.push({ layer, media });
   }
   // 非表示レイヤーの動画は止める
@@ -1102,6 +1114,11 @@ async function init() {
     } else if (p.ratio !== undefined) {
       $('progressBar').style.width = `${(p.ratio * 100).toFixed(1)}%`;
       $('progressText').textContent = `${(p.ratio * 100).toFixed(1)}%  ${QGCore.formatTime(p.time)} / ${QGCore.formatTime(duration())}  経過 ${p.elapsed.toFixed(0)}秒${p.eta !== null ? ` / 残り約 ${Math.ceil(p.eta)}秒` : ''}`;
+      if (p.projected) {
+        const gb = (b) => (b / 1e9).toFixed(1);
+        $('progressText').textContent += `  推定サイズ 約 ${gb(p.projected)} GB${p.freeBytes !== null ? `（空き ${gb(p.freeBytes)} GB）` : ''}`;
+        if (p.lowSpace) $('progressText').textContent += '  ⚠ 空き容量が足りなくなる見込みです';
+      }
     }
   });
   $('btnPickFfmpeg').onclick = async () => {

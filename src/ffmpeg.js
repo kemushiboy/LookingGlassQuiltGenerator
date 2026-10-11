@@ -140,7 +140,11 @@ const MAX_LOOP_INPUTS = 120;
 function buildExport(project, mediaMap, outPath, encoders) {
   const geo = core.geometry(project);
   const fps = core.projectFps(project, mediaMap);
-  const dur = core.projectDuration(project, mediaMap);
+  const dur = core.projectDuration(project, mediaMap); // 合成部分の尺
+  // 冒頭の静止時間: 合成の最初のフレームを複製し、音声はその分だけ遅らせる
+  const pre = core.prerollOf(project);
+  const total = dur + pre;
+  const prePad = pre > 0 ? `,tpad=start_duration=${n3(pre)}:start_mode=clone` : '';
   const N = geo.n;
   const inputs = []; // ffmpeg 引数の配列の配列
   const graph = [];
@@ -256,9 +260,9 @@ function buildExport(project, mediaMap, outPath, encoders) {
       const row = Math.floor(i / geo.cols);
       layout.push(`${col * geo.vw}_${(geo.rows - 1 - row) * geo.vh}`);
     }
-    graph.push(`${viewLabels.join('')}xstack=inputs=${N}:layout=${layout.join('|')}:fill=black,format=yuv420p[vout]`);
+    graph.push(`${viewLabels.join('')}xstack=inputs=${N}:layout=${layout.join('|')}:fill=black${prePad},format=yuv420p[vout]`);
   } else {
-    graph.push('[v0]format=yuv420p[vout]');
+    graph.push(`[v0]null${prePad},format=yuv420p[vout]`);
   }
 
   // ---- 音声
@@ -282,7 +286,7 @@ function buildExport(project, mediaMap, outPath, encoders) {
   }
   if (audioSrc) {
     const m = audioSrc.media;
-    const processed = audioSrc.in > 0 || audioSrc.start > 0 || audioSrc.loop || audioSrc.out > 0 || au.volume || au.fadeIn > 0 || au.fadeOut > 0;
+    const processed = pre > 0 || audioSrc.in > 0 || audioSrc.start > 0 || audioSrc.loop || audioSrc.out > 0 || au.volume || au.fadeIn > 0 || au.fadeOut > 0;
     let codec = au.codec;
     const copyable = ['aac', 'mp3', 'alac', 'ac3'];
     if (codec === 'auto') codec = !processed && copyable.includes(m.audioCodec) ? 'copy' : 'aac';
@@ -297,11 +301,12 @@ function buildExport(project, mediaMap, outPath, encoders) {
     } else {
       const src = addSegmentSource(audioSrc.file, m, audioSrc, 'a', 'au');
       const f = ['asetpts=PTS-STARTPTS'];
-      if (audioSrc.start > 0) f.push(`adelay=${Math.round(audioSrc.start * 1000)}:all=1`);
+      const delay = Number(audioSrc.start || 0) + pre;
+      if (delay > 0) f.push(`adelay=${Math.round(delay * 1000)}:all=1`);
       if (au.volume) f.push(`volume=${au.volume}dB`);
-      if (au.fadeIn > 0) f.push(`afade=t=in:st=${n3(audioSrc.start || 0)}:d=${n3(au.fadeIn)}`);
-      if (au.fadeOut > 0) f.push(`afade=t=out:st=${n3(Math.max(0, dur - au.fadeOut))}:d=${n3(au.fadeOut)}`);
-      f.push(`atrim=end=${n3(dur)}`);
+      if (au.fadeIn > 0) f.push(`afade=t=in:st=${n3(delay)}:d=${n3(au.fadeIn)}`);
+      if (au.fadeOut > 0) f.push(`afade=t=out:st=${n3(Math.max(0, total - au.fadeOut))}:d=${n3(au.fadeOut)}`);
+      f.push(`atrim=end=${n3(total)}`);
       graph.push(`[${src}]${f.join(',')}[aout]`);
       audioArgs = ['-map', '[aout]'];
       if (codec === 'pcm') {
@@ -373,14 +378,14 @@ function buildExport(project, mediaMap, outPath, encoders) {
   inputs.forEach((a) => args.push(...a));
   return {
     estBitrate: 0,
-    geo, fps, dur, ext, enc: `${enc} / ${pix}${lossless ? ' / ロスレス' : ''}`, audioDesc, warnings, filterText, outPath,
+    geo, fps, dur: total, preroll: pre, ext, enc: `${enc} / ${pix}${lossless ? ' / ロスレス' : ''}`, audioDesc, warnings, filterText, outPath,
     // filter は長くなるのでファイル経由で渡す（-/filter_complex は ffmpeg 7.1 以降。古い版は -filter_complex_script）
     makeArgs(filterFile, legacy) {
       return [
         ...args,
         legacy ? '-filter_complex_script' : '-/filter_complex', filterFile,
         '-map', '[vout]', ...audioArgs, ...videoArgs,
-        '-r', String(fps), '-t', String(n3(dur)),
+        '-r', String(fps), '-t', String(n3(total)),
         '-movflags', '+faststart',
         '-progress', 'pipe:1', '-nostats',
         outPath,
@@ -417,6 +422,9 @@ async function startExport(project, mediaMap, outPath, encoders, onProgress) {
     const p = spawn(ffmpegPath, args, { windowsHide: true });
     current = { proc: p, cancelled: false };
     const started = Date.now();
+    let totalSize = 0;
+    let freeBytes = null;
+    let freeAt = 0;
     let log = '';
     let buf = '';
     p.stdout.on('data', (d) => {
@@ -425,12 +433,25 @@ async function startExport(project, mediaMap, outPath, encoders, onProgress) {
       while ((nl = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
+        if (line.startsWith('total_size=')) totalSize = Number(line.slice(11)) || totalSize;
         const m = /^out_time_us=(\d+)/.exec(line);
         if (m) {
           const t = Number(m[1]) / 1e6;
           const ratio = Math.min(1, t / job.dur);
           const elapsed = (Date.now() - started) / 1000;
-          onProgress({ ratio, time: t, elapsed, eta: ratio > 0.01 ? (elapsed / ratio) * (1 - ratio) : null, finishing: ratio >= 0.995 });
+          // ここまでのサイズから最終サイズを予測し、出力先の空き容量と比べる（空き容量は数秒おきに取得）
+          if (Date.now() - freeAt > 3000) {
+            freeAt = Date.now();
+            try {
+              const st = fs.statfsSync(path.dirname(job.outPath));
+              freeBytes = st.bavail * st.bsize;
+            } catch { /* noop */ }
+          }
+          const projected = ratio > 0.02 && totalSize > 0 ? totalSize / ratio : null;
+          onProgress({
+            ratio, time: t, elapsed, eta: ratio > 0.01 ? (elapsed / ratio) * (1 - ratio) : null, finishing: ratio >= 0.995,
+            size: totalSize, projected, freeBytes, lowSpace: projected !== null && freeBytes !== null && projected - totalSize > freeBytes,
+          });
         }
         // エンコード終了後、ファイルの仕上げ（moov の移動など）の間は進捗が出ない
         if (line === 'progress=end') onProgress({ ratio: 1, finishing: true, elapsed: (Date.now() - started) / 1000 });
@@ -446,10 +467,13 @@ async function startExport(project, mediaMap, outPath, encoders, onProgress) {
       fs.rm(filterFile, { force: true }, () => {});
       const cancelled = current && current.cancelled;
       current = null;
-      if (cancelled) fs.rm(job.outPath, { force: true }, () => {});
+      const ok = code === 0 && !cancelled;
+      // 失敗・中止したファイルは再生できない（moov が無い）ので削除する
+      if (!ok) fs.rm(job.outPath, { force: true }, () => {});
       resolve({
-        ok: code === 0 && !cancelled,
+        ok,
         cancelled,
+        noSpace: /No space left on device/i.test(log),
         code,
         error,
         outPath: job.outPath,
