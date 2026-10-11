@@ -249,6 +249,22 @@
     return `${m}:${r.toFixed(2).padStart(5, '0')}`;
   }
 
+// 読み込んだプロジェクト JSON に既定値を補う（古いバージョンのファイルや項目の欠けにも対応）
+function normalizeProject(proj) {
+  const d = defaultProject();
+  const p = Object.assign(d, proj, {
+    custom: Object.assign(d.custom, proj.custom),
+    audio: Object.assign(d.audio, proj.audio),
+    video: Object.assign(defaultProject().video, migrateVideo(Object.assign({}, proj.video || {}))),
+    output: Object.assign(d.output, proj.output),
+  });
+  p.layers = (proj.layers || []).map((l) => {
+    const base = defaultLayer(l.path, l.kind);
+    return Object.assign(base, l, { crop: Object.assign(base.crop, l.crop), key: Object.assign(base.key, l.key) });
+  });
+  return p;
+}
+
 // 旧バージョンのプロジェクト（video.encoder にコーデック名）を新形式に変換
 function migrateVideo(v) {
   const old = { libx264: ['h264', 'cpu'], h264_nvenc: ['h264', 'gpu'], libx265: ['hevc420', 'cpu'], hevc_nvenc: ['hevc420', 'gpu'] };
@@ -265,7 +281,7 @@ function migrateVideo(v) {
 }
 
   return {
-    PRESETS, migrateVideo, IMAGE_EXT, newId, isImagePath, baseName, defaultProject, defaultLayer,
+    PRESETS, migrateVideo, normalizeProject, IMAGE_EXT, newId, isImagePath, baseName, defaultProject, defaultLayer,
     geometry, viewFactor, maxShift, shiftAt, layerBox, drawOrder,
     segLength, naturalEnd, projectFps, projectDuration, sourceTime,
     prerollOf, totalDuration, compTime,

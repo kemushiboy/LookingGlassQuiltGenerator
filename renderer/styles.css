@@ -180,3 +180,18 @@ body.dragging .drop-hint { border-color: var(--accent); color: var(--accent); ba
 #modalBody textarea { width: 100%; height: 260px; background: #0f1115; color: var(--text); border: 1px solid var(--line); font-family: Consolas, monospace; font-size: 11px; }
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: #2b303b; border: 1px solid var(--line); padding: 8px 14px; border-radius: 6px; z-index: 60; max-width: 70vw; }
 .toast.error { border-color: var(--danger); }
+
+/* ---- 一括書き出し */
+.batch-box { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.batch-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.batch-item { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-2); padding: 6px 8px; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; }
+.batch-item .bname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-item .bout { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; grid-column: 1 / 3; }
+.batch-item .bstate { font-size: 11px; color: var(--muted); grid-column: 1 / 3; }
+.batch-item.done .bstate { color: var(--ok); }
+.batch-item.error .bstate { color: var(--danger); cursor: pointer; text-decoration: underline; }
+.batch-item.skipped .bstate, .batch-item.cancelled .bstate { color: var(--warn); }
+.batch-item.running { border-color: var(--accent); }
+.batch-item .bbar { grid-column: 1 / 3; height: 4px; background: #12141a; border-radius: 2px; overflow: hidden; }
+.batch-item .bbar > div { height: 100%; width: 0; background: var(--accent); }
+.batch-item .ops button { padding: 1px 6px; font-size: 11px; }

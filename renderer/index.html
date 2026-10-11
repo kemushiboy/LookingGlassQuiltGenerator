@@ -105,6 +105,22 @@
           </div>
           <pre id="exportLog" class="log hidden"></pre>
         </div>
+        <div class="batch-box">
+          <div class="section-title">一括書き出し</div>
+          <p class="hint">保存済みの複数のプロジェクトを順番に書き出します。各プロジェクトに保存された書き出し設定と出力先を使います（出力先が未設定ならプロジェクトファイルと同じフォルダ）。</p>
+          <div class="row">
+            <button id="btnBatchAdd">プロジェクトを追加…</button>
+            <button id="btnBatchAddCurrent" title="現在のプロジェクトを保存して一覧に追加">現在のプロジェクトを追加</button>
+            <button id="btnBatchClear">一覧を空にする</button>
+          </div>
+          <ul id="batchList" class="batch-list"></ul>
+          <label class="inline"><input type="checkbox" id="batchOverwrite"> 同名ファイルがあれば上書き（オフならスキップ）</label>
+          <div class="row">
+            <button id="btnBatchStart" class="primary" disabled>一括書き出し開始</button>
+            <button id="btnBatchCancel" class="danger" disabled>中止</button>
+          </div>
+          <div id="batchSummary" class="muted small"></div>
+        </div>
         <details class="settings">
           <summary>ffmpeg 設定</summary>
           <div id="ffmpegInfo" class="small muted"></div>

@@ -488,7 +488,7 @@ function renderExportTab() {
         ['h264', 'H.264 4:2:0 8bit（実機再生用・互換性重視）'],
         ['hevc_lossless', 'Studio変換用 HEVC ロスレス（実機再生も可）'],
       ],
-      help: '実機再生用: Bridge（PC接続時の表示）で再生できる形式。Studio変換用: Studio に読み込んで本体へ転送（変換）する前提のマスター。ProRes は Bridge では再生できないため「実機で再生」「Bridge確認」には使えません。',
+      help: '実機再生用: Bridge（PC接続時の表示）で再生できる形式。Studio変換用: Studio に読み込んで本体へ転送（変換）する前提のマスター（ロスレスなので容量は大きめ）。',
     },
     { key: 'encoder', label: 'エンコーダ', type: 'select', options: [['auto', gpuOk ? '自動（GPU）' : '自動（CPU）'], ['gpu', 'GPU（NVENC / VideoToolbox・高速）'], ['cpu', 'CPU（x264/x265・低速だが同じ容量でより高画質）']] },
     { key: 'crf', label: '品質', type: 'range', min: 1, max: 30, step: 1, def: 12, show: (o) => o.format !== 'hevc_lossless', help: '小さいほど高画質・大容量（目安: 高画質 8〜12 / 公式推奨 20）' },
@@ -547,6 +547,7 @@ function updateExportSummary() {
 
 async function startExport() {
   if (state.exporting) return;
+  if (batch.running) return toast('一括書き出し中です', true);
   if (!state.ffmpeg || !state.ffmpeg.ok) return toast('ffmpeg が見つかりません', true);
   if (!state.project.layers.length) return toast('素材を追加してください', true);
   if (!state.project.output.dir) {
@@ -557,6 +558,7 @@ async function startExport() {
   }
   setPlaying(false);
   state.exporting = true;
+  renderBatch();
   $('btnExport').disabled = true;
   $('btnCancel').disabled = false;
   $('progressBar').style.width = '0%';
@@ -564,6 +566,7 @@ async function startExport() {
   $('exportLog').classList.add('hidden');
   const r = await api.startExport(state.project, state.mediaMap, outputPath());
   state.exporting = false;
+  renderBatch();
   $('btnExport').disabled = false;
   $('btnCancel').disabled = true;
   if (r.ok) {
@@ -954,14 +957,9 @@ async function loadProject(given) {
   } catch (e) {
     return toast('プロジェクトファイルを読み込めません', true);
   }
-  await resetProject(Object.assign(QGCore.defaultProject(), proj, {
-    audio: Object.assign(QGCore.defaultProject().audio, proj.audio),
-    video: Object.assign(QGCore.defaultProject().video, QGCore.migrateVideo(Object.assign({}, proj.video || {}))),
-    output: Object.assign(QGCore.defaultProject().output, proj.output),
-  }));
+  await resetProject(QGCore.normalizeProject(proj));
   state.projectPath = r.path;
   for (const l of state.project.layers) {
-    Object.assign(l, Object.assign(QGCore.defaultLayer(l.path, l.kind), l));
     try {
       await ensureMedia(l.path);
       await attachSource(l);
@@ -1016,6 +1014,97 @@ function showTab(name) {
   if (name === 'project') renderProjectTab();
   if (name === 'audio') renderAudioTab();
   if (name === 'export') renderExportTab();
+}
+
+// ================================================================ 一括書き出し
+const batch = { items: [], running: false }; // items: { file, info, state, message, ratio, outPath, log }
+const BATCH_LABEL = { waiting: '待機', probing: '素材を確認中…', running: '書き出し中', done: '完了', error: 'エラー', skipped: 'スキップ', cancelled: '中止' };
+
+async function batchAdd(files) {
+  const fresh = files.filter((f) => !batch.items.some((it) => it.file === f));
+  if (!fresh.length) return;
+  const infos = await api.batchInspect(fresh);
+  for (const info of infos) {
+    batch.items.push({ file: info.file, info, state: info.ok ? 'waiting' : 'error', message: info.ok ? (info.exists ? '同名ファイルあり' : '') : info.error, ratio: 0, outPath: info.outPath || '' });
+  }
+  renderBatch();
+}
+
+async function batchAddCurrent() {
+  if (!state.project.layers.length) return toast('素材がありません', true);
+  // 一括書き出しは保存済みのファイルを使うので、未保存なら先に保存する
+  if (!state.projectPath || state.dirty) await saveProject(false);
+  if (!state.projectPath || state.dirty) return;
+  await batchAdd([state.projectPath]);
+}
+
+function renderBatch() {
+  const ul = $('batchList');
+  ul.innerHTML = '';
+  batch.items.forEach((it, i) => {
+    const pct = it.state === 'running' ? `${(it.ratio * 100).toFixed(1)}%` : '';
+    const stateText = [BATCH_LABEL[it.state], pct, it.message].filter(Boolean).join('  ');
+    const st = el('div', { class: 'bstate' }, stateText);
+    if (it.state === 'error' && it.log) st.onclick = () => modal(`エラー: ${QGCore.baseName(it.file)}`, el('textarea', { readonly: true }, it.log));
+    const li = el('li', { class: `batch-item ${it.state}` },
+      el('div', { class: 'bname', title: it.file }, `${i + 1}. ${QGCore.baseName(it.file)}${it.info && it.info.summary ? `（${it.info.summary}）` : ''}`),
+      el('div', { class: 'ops' },
+        it.state === 'done' ? el('button', { onclick: () => api.showInFolder(it.outPath) }, 'フォルダ') : null,
+        el('button', { title: '一覧から外す', disabled: batch.running, onclick: () => { batch.items.splice(i, 1); renderBatch(); } }, '✕')),
+      el('div', { class: 'bout', title: it.outPath }, it.outPath ? `→ ${it.outPath}` : ''),
+      st,
+      it.state === 'running' ? el('div', { class: 'bbar' }, el('div', { style: `width:${pct}` })) : null);
+    ul.appendChild(li);
+  });
+  const runnable = batch.items.filter((it) => it.info && it.info.ok).length;
+  $('btnBatchStart').disabled = batch.running || state.exporting || runnable === 0;
+  $('btnBatchCancel').disabled = !batch.running;
+  $('btnBatchAdd').disabled = batch.running;
+  $('btnBatchAddCurrent').disabled = batch.running;
+  $('btnBatchClear').disabled = batch.running || !batch.items.length;
+  $('btnExport').disabled = batch.running || state.exporting;
+}
+
+async function batchStart() {
+  if (batch.running || state.exporting) return;
+  if (!state.ffmpeg || !state.ffmpeg.ok) return toast('ffmpeg が見つかりません', true);
+  const targets = batch.items.filter((it) => it.info && it.info.ok);
+  if (!targets.length) return;
+  setPlaying(false);
+  batch.running = true;
+  batch.items = targets;
+  for (const it of batch.items) {
+    it.state = 'waiting';
+    it.message = '';
+    it.ratio = 0;
+    it.log = '';
+  }
+  renderBatch();
+  const started = Date.now();
+  const r = await api.batchStart(batch.items.map((it) => it.file), { overwrite: $('batchOverwrite').checked });
+  batch.running = false;
+  renderBatch();
+  if (!r.ok) return toast(r.error, true);
+  const count = (s) => r.results.filter((x) => x.state === s).length;
+  const msg = `一括書き出し終了（${((Date.now() - started) / 1000).toFixed(0)}秒）: 完了 ${count('done')} / スキップ ${count('skipped')} / エラー ${count('error')} / 中止 ${count('cancelled')}`;
+  $('batchSummary').textContent = msg;
+  toast(msg, count('error') > 0);
+}
+
+function onBatchProgress(m) {
+  const it = batch.items[m.index];
+  if (!it) return;
+  it.state = m.state;
+  if (m.message !== undefined) it.message = m.message;
+  if (m.outPath) it.outPath = m.outPath;
+  if (m.log) it.log = m.log;
+  if (m.progress) {
+    if (m.progress.ratio !== undefined) it.ratio = m.progress.ratio;
+    const p = m.progress;
+    it.message = p.finishing ? '仕上げ中…' : p.eta ? `残り約 ${Math.ceil(p.eta)}秒${p.projected ? ` / 推定 ${(p.projected / 1e9).toFixed(1)} GB` : ''}${p.lowSpace ? ' ⚠ 空き容量不足の見込み' : ''}` : '';
+  }
+  renderBatch();
+  $('batchSummary').textContent = `${m.index + 1} / ${batch.items.length} 件目`;
 }
 
 // ================================================================ 初期化
@@ -1096,6 +1185,20 @@ async function init() {
   // 書き出し
   $('btnExport').onclick = startExport;
   $('btnCancel').onclick = () => api.cancelExport();
+  $('btnBatchAdd').onclick = async () => {
+    const files = await api.pickProjects();
+    if (files.length) batchAdd(files);
+  };
+  $('btnBatchAddCurrent').onclick = batchAddCurrent;
+  $('btnBatchClear').onclick = () => {
+    batch.items = [];
+    $('batchSummary').textContent = '';
+    renderBatch();
+  };
+  $('btnBatchStart').onclick = batchStart;
+  $('btnBatchCancel').onclick = () => api.batchCancel();
+  api.onBatchProgress(onBatchProgress);
+  renderBatch();
   $('btnShowOutput').onclick = () => state.lastOutput && api.showInFolder(state.lastOutput);
   $('btnCastOutput').onclick = castOutput;
   $('btnCommand').onclick = async () => {
@@ -1181,6 +1284,12 @@ async function init() {
       await refreshBridge(true);
       await toggleLkg();
       setTimeout(() => setPlaying(true), 3000);
+    }
+    if (mode === 'batch') {
+      showTab('export');
+      await batchAdd(info.selftestBatch);
+      await batchStart();
+      console.log('selftest batch:', batch.items.map((it) => `${QGCore.baseName(it.file)}=${it.state}:${it.message}`).join(' | '));
     }
     if (mode === 'export') {
       document.querySelector('#viewModes button[data-mode="quilt"]').click();

@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('export:progress', h);
   },
   showInFolder: (p) => ipcRenderer.invoke('shell:show', p),
+  // 一括書き出し
+  pickProjects: () => ipcRenderer.invoke('dialog:projects'),
+  batchInspect: (files) => ipcRenderer.invoke('batch:inspect', files),
+  batchStart: (files, opts) => ipcRenderer.invoke('batch:start', files, opts),
+  batchCancel: () => ipcRenderer.invoke('batch:cancel'),
+  onBatchProgress: (cb) => ipcRenderer.on('batch:progress', (_e, m) => cb(m)),
   bridgeStatus: () => ipcRenderer.invoke('bridge:status'),
   bridgeCastFile: (p, s) => ipcRenderer.invoke('bridge:castFile', p, s),
   bridgeCastImage: (buf, s) => ipcRenderer.invoke('bridge:castImage', buf, s),

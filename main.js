@@ -140,7 +140,7 @@ function rememberDir(p) {
   }
 }
 
-ipcMain.handle('app:info', () => ({ ffmpeg: ffInfo, settings, startupProject: process.env.QG_SELFTEST || '', selftestMode: process.env.QG_SELFTEST_MODE || '' }));
+ipcMain.handle('app:info', () => ({ ffmpeg: ffInfo, settings, startupProject: process.env.QG_SELFTEST || '', selftestMode: process.env.QG_SELFTEST_MODE || '', selftestBatch: (process.env.QG_SELFTEST_BATCH || '').split('|').filter(Boolean) }));
 
 ipcMain.handle('settings:setFfmpeg', async (_e, p) => {
   settings.ffmpegPath = p || '';
@@ -230,6 +230,103 @@ ipcMain.handle('export:start', async (_e, project, mediaMap, outPath) => {
 });
 
 ipcMain.handle('export:cancel', () => ff.cancelExport());
+
+// ---------------------------------------------------------------- 一括書き出し
+// 保存済みのプロジェクトファイルを順番に読み込み、素材を調べて書き出す（プレビュー画面は使わない）
+const core = require('./src/core');
+let batch = null;
+
+ipcMain.handle('dialog:projects', async () => {
+  const r = await dialog.showOpenDialog(win, { title: '書き出すプロジェクトを選択', defaultPath: settings.lastDir || undefined, properties: ['openFile', 'multiSelections'], filters: [{ name: 'Quilt プロジェクト', extensions: ['json'] }] });
+  return r.canceled ? [] : r.filePaths;
+});
+
+// プロジェクトファイルを読み込み、出力先を決める（一覧表示用）
+function loadBatchItem(file) {
+  const proj = core.normalizeProject(JSON.parse(fs.readFileSync(file, 'utf8')));
+  if (!proj.output.dir) proj.output.dir = path.dirname(file);
+  const ext = 'mp4';
+  const outPath = path.join(proj.output.dir, core.outputFileName(proj, ext));
+  return { proj, outPath };
+}
+
+ipcMain.handle('batch:inspect', (_e, files) => files.map((file) => {
+  try {
+    const { proj, outPath } = loadBatchItem(file);
+    const geo = core.geometry(proj);
+    return { file, ok: true, outPath, exists: fs.existsSync(outPath), layers: proj.layers.length, summary: `${geo.cols}×${geo.rows} / ${proj.layers.length}レイヤー` };
+  } catch (e) {
+    return { file, ok: false, error: `読み込めません: ${e.message}` };
+  }
+}));
+
+ipcMain.handle('batch:start', async (_e, files, opts) => {
+  if (batch) return { ok: false, error: '一括書き出し中です' };
+  batch = { cancelled: false };
+  const send = (m) => { if (win && !win.isDestroyed()) win.webContents.send('batch:progress', m); };
+  const results = [];
+  for (let i = 0; i < files.length; i++) {
+    if (batch.cancelled) {
+      send({ index: i, state: 'cancelled', message: '中止' });
+      results.push({ file: files[i], state: 'cancelled' });
+      continue;
+    }
+    const file = files[i];
+    let item;
+    try {
+      item = loadBatchItem(file);
+    } catch (e) {
+      send({ index: i, state: 'error', message: `読み込めません: ${e.message}` });
+      results.push({ file, state: 'error' });
+      continue;
+    }
+    const { proj, outPath } = item;
+    if (fs.existsSync(outPath) && !opts.overwrite) {
+      send({ index: i, state: 'skipped', message: '同名ファイルがあるためスキップ', outPath });
+      results.push({ file, state: 'skipped' });
+      continue;
+    }
+    // 素材を調べる
+    send({ index: i, state: 'probing', message: '素材を確認中…' });
+    const mediaMap = {};
+    const missing = [];
+    const paths = proj.layers.map((l) => l.path);
+    if (proj.audio.mode === 'file' && proj.audio.path) paths.push(proj.audio.path);
+    for (const p of paths) {
+      if (mediaMap[p]) continue;
+      try {
+        mediaMap[p] = await ff.probe(p);
+      } catch {
+        missing.push(path.basename(p));
+      }
+    }
+    if (missing.length) {
+      send({ index: i, state: 'error', message: `素材が見つかりません: ${missing.join(', ')}` });
+      results.push({ file, state: 'error' });
+      continue;
+    }
+    const r = await ff.startExport(proj, mediaMap, outPath, ffInfo.encoders, (p) => send({ index: i, state: 'running', progress: p }));
+    const state = r.ok ? 'done' : r.cancelled ? 'cancelled' : 'error';
+    send({
+      index: i,
+      state,
+      outPath: r.outPath,
+      elapsed: r.elapsed,
+      message: r.ok ? `完了（${r.elapsed.toFixed(0)}秒）` : r.cancelled ? '中止' : r.noSpace ? '空き容量不足で中断' : 'エラー',
+      log: r.ok ? '' : (r.error || r.log || '').slice(-3000),
+    });
+    results.push({ file, state, outPath: r.outPath });
+  }
+  batch = null;
+  return { ok: true, results };
+});
+
+ipcMain.handle('batch:cancel', () => {
+  if (!batch) return false;
+  batch.cancelled = true;
+  ff.cancelExport();
+  return true;
+});
 
 ipcMain.handle('shell:show', (_e, p) => shell.showItemInFolder(p));
 
